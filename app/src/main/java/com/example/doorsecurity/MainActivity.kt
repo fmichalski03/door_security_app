@@ -27,7 +27,6 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -253,26 +252,67 @@ fun LoadingCard() {
 }
 
 // ── Camera ────────────────────────────────────────────────────────────────
-data class LatestImage(val bitmap: Bitmap, val timestamp: Long)
+data class LatestImage(
+    val bitmap: Bitmap,
+    val status: String?,
+    val who: String?
+)
+
+data class DeviceInfo(
+    val id: String,
+    val name: String,
+    val status: String
+)
 
 @Composable
-fun rememberLatestImage(): LatestImage? {
-    var image by remember { mutableStateOf<LatestImage?>(null) }
+fun rememberFirestoreDevices(): List<DeviceInfo> {
+    var devices by remember { mutableStateOf<List<DeviceInfo>>(emptyList()) }
 
     DisposableEffect(Unit) {
         val listener = FirebaseFirestore.getInstance()
-            .collection("images")
-            .orderBy("timestamp", Query.Direction.DESCENDING)
-            .limit(1)
+            .collection("devices_info")
+            .orderBy("name", Query.Direction.ASCENDING)
             .addSnapshotListener { snapshot, error ->
-                if (error != null || snapshot == null || snapshot.isEmpty) return@addSnapshotListener
-                val doc = snapshot.documents.first()
-                val b64 = doc.getString("image_b64") ?: return@addSnapshotListener
-                val ts  = doc.getTimestamp("timestamp")?.seconds ?: 0L
+                if (error != null || snapshot == null) return@addSnapshotListener
+                devices = snapshot.documents.mapNotNull { doc ->
+                    val name = doc.getString("name") ?: return@mapNotNull null
+                    val status = doc.getString("status") ?: "offline"
+                    DeviceInfo(id = doc.id, name = name, status = status)
+                }
+            }
+        onDispose { listener.remove() }
+    }
+
+    return devices
+}
+
+@Composable
+fun rememberDeviceImage(deviceId: String?): LatestImage? {
+    var image by remember(deviceId) { mutableStateOf<LatestImage?>(null) }
+
+    DisposableEffect(deviceId) {
+        if (deviceId == null) {
+            image = null
+            return@DisposableEffect onDispose {}
+        }
+
+        val listener = FirebaseFirestore.getInstance()
+            .collection("images")
+            .document("last_image")
+            .addSnapshotListener { snapshot, error ->
+                if (error != null || snapshot == null || !snapshot.exists()) return@addSnapshotListener
+
+                val b64 = snapshot.getString("image_64") ?: snapshot.getString("image_b64")
+                if (b64 == null) return@addSnapshotListener
+
+                val status = snapshot.getString("status")
+                val who = snapshot.getString("who")
+
                 try {
-                    val bytes  = Base64.decode(b64, Base64.NO_WRAP)
+                    val cleanB64 = if (b64.contains(",")) b64.substringAfter(",") else b64
+                    val bytes  = Base64.decode(cleanB64, Base64.DEFAULT)
                     val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
-                    if (bitmap != null) image = LatestImage(bitmap, ts)
+                    if (bitmap != null) image = LatestImage(bitmap, status, who)
                 } catch (_: Exception) {}
             }
         onDispose { listener.remove() }
@@ -283,56 +323,166 @@ fun rememberLatestImage(): LatestImage? {
 
 @Composable
 fun CameraScreen() {
-    val latest = rememberLatestImage()
+    val devices = rememberFirestoreDevices()
+    var selectedDevice by remember { mutableStateOf<DeviceInfo?>(null) }
+    var showPreview by remember { mutableStateOf(false) }
+    val latest = rememberDeviceImage(if (showPreview) selectedDevice?.id else null)
 
-    Column(Modifier.fillMaxSize().background(BgDark).padding(16.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-        Card(shape = RoundedCornerShape(12.dp), colors = CardDefaults.cardColors(containerColor = BgCard),
-            border = BorderStroke(0.5.dp, Border), modifier = Modifier.fillMaxWidth()) {
-            Box {
-                if (latest != null) {
-                    Image(
-                        bitmap = latest.bitmap.asImageBitmap(),
-                        contentDescription = "Ostatni obraz z kamery",
-                        contentScale = ContentScale.Crop,
-                        modifier = Modifier.fillMaxWidth().height(260.dp).clip(RoundedCornerShape(12.dp))
-                    )
-                    // Timestamp overlay
-                    Box(Modifier.align(Alignment.BottomEnd).padding(12.dp)
-                        .background(Color.Black.copy(alpha = 0.6f), RoundedCornerShape(4.dp))
-                        .padding(horizontal = 8.dp, vertical = 4.dp)) {
-                        val sdf = SimpleDateFormat("yyyy-MM-dd  HH:mm:ss", Locale.getDefault())
-                        Text(sdf.format(Date(latest.timestamp * 1000L)),
-                            fontSize = 11.sp, color = Color.White, fontFamily = FontFamily.Monospace)
+    Column(
+        Modifier
+            .fillMaxSize()
+            .background(BgDark)
+            .padding(16.dp)
+            .verticalScroll(rememberScrollState()),
+        verticalArrangement = Arrangement.spacedBy(14.dp)
+    ) {
+        SectionTitle("Wybierz urządzenie")
+        if (devices.isEmpty()) {
+            LoadingCard()
+        } else {
+            devices.forEach { device ->
+                DeviceRow(
+                    device = device,
+                    isSelected = selectedDevice?.id == device.id,
+                    onClick = {
+                        selectedDevice = device
+                        showPreview = false
                     }
-                } else {
-                    // Ładowanie
+                )
+            }
+        }
+
+        if (selectedDevice != null) {
+            Button(
+                onClick = {
+                    showPreview = true
+                    val db = FirebaseFirestore.getInstance()
+                    db.collection("commands_queue")
+                        .document(selectedDevice!!.id)
+                        .collection("commands")
+                        .add(mapOf(
+                            "command" to "capture",
+                            "timestamp" to System.currentTimeMillis() / 1000L
+                        ))
+                },
+                modifier = Modifier.fillMaxWidth().height(48.dp),
+                shape = RoundedCornerShape(8.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = AccentGreen,
+                    contentColor = BgDark
+                )
+            ) {
+                Text("ZOBACZ PODGLĄD Z KAMERY", fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+            }
+        }
+
+        if (showPreview) {
+            val borderColor = when (latest?.status?.uppercase()) {
+                "OK" -> AccentGreen
+                "NO" -> AccentRed
+                else -> Border
+            }
+
+            Card(
+                shape = RoundedCornerShape(12.dp),
+                colors = CardDefaults.cardColors(containerColor = BgCard),
+                border = BorderStroke(2.dp, borderColor),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column {
                     Box(Modifier.fillMaxWidth().height(260.dp), contentAlignment = Alignment.Center) {
-                        Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                            CircularProgressIndicator(color = AccentGreen, modifier = Modifier.size(24.dp), strokeWidth = 2.dp)
-                            Text("Oczekiwanie na obraz z kamery…", fontSize = 12.sp, color = TextSecondary, fontFamily = FontFamily.Monospace)
+                        if (latest != null) {
+                            Image(
+                                bitmap = latest.bitmap.asImageBitmap(),
+                                contentDescription = "Ostatni obraz z kamery",
+                                contentScale = ContentScale.Crop,
+                                modifier = Modifier.fillMaxSize().clip(RoundedCornerShape(topStart = 12.dp, topEnd = 12.dp))
+                            )
+                        } else {
+                            Text(
+                                "Oczekiwanie na odpowiedź urządzenia…",
+                                fontSize = 12.sp,
+                                color = TextSecondary,
+                                fontFamily = FontFamily.Monospace
+                            )
+                        }
+                    }
+                    if (latest != null) {
+                        Box(
+                            Modifier
+                                .fillMaxWidth()
+                                .background(BgCardAlt)
+                                .padding(12.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = "ROZPOZNANO: ${latest.who ?: "Nieznany"}",
+                                color = TextPrimary,
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.Bold,
+                                fontFamily = FontFamily.Monospace
+                            )
                         }
                     }
                 }
             }
         }
-        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            InfoTile("Urządzenie", "RPi", Modifier.weight(1f))
-            InfoTile("Źródło", "Firestore", Modifier.weight(1f))
-            InfoTile("Status", if (latest != null) "OK" else "BRAK", Modifier.weight(1f))
-        }
     }
 }
 
 @Composable
-fun InfoTile(label: String, value: String, modifier: Modifier = Modifier) {
-    Card(modifier = modifier, shape = RoundedCornerShape(8.dp),
-        colors = CardDefaults.cardColors(containerColor = BgCardAlt), border = BorderStroke(0.5.dp, Border)) {
-        Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-            Text(label, fontSize = 10.sp, color = TextSecondary, fontFamily = FontFamily.Monospace)
-            Text(value,  fontSize = 13.sp, color = TextPrimary,  fontFamily = FontFamily.Monospace, fontWeight = FontWeight.SemiBold)
+fun DeviceRow(device: DeviceInfo, isSelected: Boolean = false, onClick: () -> Unit = {}) {
+    val isOnline = device.status.lowercase() == "online"
+    val statusColor = if (isOnline) AccentGreen else AccentRed
+    val borderColor = if (isSelected) AccentGreen.copy(alpha = 0.5f) else Border
+    val containerColor = if (isSelected) BgCardAlt else BgCard
+
+    Card(
+        shape = RoundedCornerShape(10.dp),
+        colors = CardDefaults.cardColors(containerColor = containerColor),
+        border = BorderStroke(if (isSelected) 1.dp else 0.5.dp, borderColor),
+        modifier = Modifier.fillMaxWidth().clickable { onClick() }
+    ) {
+        Row(
+            Modifier.padding(12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Box(
+                Modifier
+                    .size(8.dp)
+                    .clip(CircleShape)
+                    .background(statusColor)
+            )
+            Column(Modifier.weight(1f)) {
+                Text(
+                    device.name,
+                    fontSize = 14.sp,
+                    color = TextPrimary,
+                    fontFamily = FontFamily.Monospace,
+                    fontWeight = FontWeight.SemiBold
+                )
+                Text(
+                    device.status.lowercase(),
+                    fontSize = 11.sp,
+                    color = statusColor,
+                    fontFamily = FontFamily.Monospace
+                )
+            }
+            if (isSelected) {
+                Icon(Icons.Default.Check, null, tint = AccentGreen, modifier = Modifier.size(16.dp))
+            } else {
+                Icon(
+                    imageVector = if (isOnline) Icons.Default.CheckCircle else Icons.Default.Warning,
+                    contentDescription = null,
+                    tint = statusColor.copy(alpha = 0.6f),
+                    modifier = Modifier.size(16.dp)
+                )
+            }
         }
     }
 }
+
 
 @Composable
 fun LogsScreen(logs: List<LogEntry>) {

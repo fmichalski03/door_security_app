@@ -1,13 +1,13 @@
 {
   "project_info": {
-    "project_number": "1062178758672",
-    "project_id": "doorsecurity-ebed5",
-    "storage_bucket": "doorsecurity-ebed5.firebasestorage.app"
+    "project_number": "917163243018",
+    "project_id": "doorsecurity-e607f",
+    "storage_bucket": "doorsecurity-e607f.firebasestorage.app"
   },
   "client": [
     {
       "client_info": {
-        "mobilesdk_app_id": "1:1062178758672:android:dd07e8729e04cc9791aa95",
+        "mobilesdk_app_id": "1:917163243018:android:b8da15d95e8907d45851f3",
         "android_client_info": {
           "package_name": "com.example.doorsecurity"
         }
@@ -15,7 +15,7 @@
       "oauth_client": [],
       "api_key": [
         {
-          "current_key": "AIzaSyByxYw8fv4YnV_7lhW7NBFr52V7MlBSjuw"
+          "current_key": "AIzaSyBROgmvPwsBZCk3sLyCXieWj5MR8iexmRY"
         }
       ],
       "services": {
