@@ -3,6 +3,8 @@ package com.example.doorsecurity
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.Matrix
+import android.media.ExifInterface
 import android.net.Uri
 import android.os.Bundle
 import android.util.Base64
@@ -98,15 +100,34 @@ fun rememberFirestoreLogs(): List<LogEntry> {
 
 fun uriToBase64(context: Context, uri: Uri): String? {
     return try {
+        // 1. Sprawdź rotację (EXIF)
+        val orientation = context.contentResolver.openInputStream(uri)?.use { input ->
+            ExifInterface(input).getAttributeInt(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL)
+        } ?: ExifInterface.ORIENTATION_NORMAL
+
+        // 2. Dekoduj bitmapę
         val stream = context.contentResolver.openInputStream(uri) ?: return null
-        val bitmap = BitmapFactory.decodeStream(stream)
+        var bitmap = BitmapFactory.decodeStream(stream)
         stream.close()
 
+        // 3. Obróć jeśli trzeba
+        if (orientation != ExifInterface.ORIENTATION_NORMAL) {
+            val matrix = Matrix()
+            when (orientation) {
+                ExifInterface.ORIENTATION_ROTATE_90 -> matrix.postRotate(90f)
+                ExifInterface.ORIENTATION_ROTATE_180 -> matrix.postRotate(180f)
+                ExifInterface.ORIENTATION_ROTATE_270 -> matrix.postRotate(270f)
+            }
+            bitmap = Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
+        }
+
+        // 4. Skaluj
         val scaled = if (bitmap.width > 800) {
             val ratio = 800f / bitmap.width
             Bitmap.createScaledBitmap(bitmap, 800, (bitmap.height * ratio).toInt(), true)
         } else bitmap
 
+        // 5. Kompresuj
         val out = ByteArrayOutputStream()
         scaled.compress(Bitmap.CompressFormat.JPEG, 80, out)
         Base64.encodeToString(out.toByteArray(), Base64.NO_WRAP)
@@ -245,7 +266,7 @@ fun LoadingCard() {
         Box(Modifier.fillMaxWidth().padding(32.dp), contentAlignment = Alignment.Center) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 CircularProgressIndicator(color = AccentGreen, modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
-                Text("Łączenie z Firebase…", fontSize = 13.sp, color = TextSecondary, fontFamily = FontFamily.Monospace)
+                Text("Szukanie urządzeń…", fontSize = 13.sp, color = TextSecondary, fontFamily = FontFamily.Monospace)
             }
         }
     }
@@ -260,8 +281,7 @@ data class LatestImage(
 
 data class DeviceInfo(
     val id: String,
-    val name: String,
-    val status: String
+    val name: String
 )
 
 @Composable
@@ -276,8 +296,7 @@ fun rememberFirestoreDevices(): List<DeviceInfo> {
                 if (error != null || snapshot == null) return@addSnapshotListener
                 devices = snapshot.documents.mapNotNull { doc ->
                     val name = doc.getString("name") ?: return@mapNotNull null
-                    val status = doc.getString("status") ?: "offline"
-                    DeviceInfo(id = doc.id, name = name, status = status)
+                    DeviceInfo(id = doc.id, name = name)
                 }
             }
         onDispose { listener.remove() }
@@ -298,7 +317,7 @@ fun rememberDeviceImage(deviceId: String?): LatestImage? {
 
         val listener = FirebaseFirestore.getInstance()
             .collection("images")
-            .document("last_image")
+            .document(deviceId)
             .addSnapshotListener { snapshot, error ->
                 if (error != null || snapshot == null || !snapshot.exists()) return@addSnapshotListener
 
@@ -347,6 +366,19 @@ fun CameraScreen() {
                     onClick = {
                         selectedDevice = device
                         showPreview = false
+                    },
+                    onDelete = {
+                        val deviceIdToDelete = device.id
+                        FirebaseFirestore.getInstance()
+                            .collection("devices_info")
+                            .document(deviceIdToDelete)
+                            .delete()
+                            .addOnSuccessListener {
+                                if (selectedDevice?.id == deviceIdToDelete) {
+                                    selectedDevice = null
+                                    showPreview = false
+                                }
+                            }
                     }
                 )
             }
@@ -431,9 +463,12 @@ fun CameraScreen() {
 }
 
 @Composable
-fun DeviceRow(device: DeviceInfo, isSelected: Boolean = false, onClick: () -> Unit = {}) {
-    val isOnline = device.status.lowercase() == "online"
-    val statusColor = if (isOnline) AccentGreen else AccentRed
+fun DeviceRow(
+    device: DeviceInfo, 
+    isSelected: Boolean = false, 
+    onClick: () -> Unit = {},
+    onDelete: () -> Unit = {}
+) {
     val borderColor = if (isSelected) AccentGreen.copy(alpha = 0.5f) else Border
     val containerColor = if (isSelected) BgCardAlt else BgCard
 
@@ -452,7 +487,7 @@ fun DeviceRow(device: DeviceInfo, isSelected: Boolean = false, onClick: () -> Un
                 Modifier
                     .size(8.dp)
                     .clip(CircleShape)
-                    .background(statusColor)
+                    .background(if (isSelected) AccentGreen else Border)
             )
             Column(Modifier.weight(1f)) {
                 Text(
@@ -462,21 +497,16 @@ fun DeviceRow(device: DeviceInfo, isSelected: Boolean = false, onClick: () -> Un
                     fontFamily = FontFamily.Monospace,
                     fontWeight = FontWeight.SemiBold
                 )
-                Text(
-                    device.status.lowercase(),
-                    fontSize = 11.sp,
-                    color = statusColor,
-                    fontFamily = FontFamily.Monospace
-                )
             }
-            if (isSelected) {
-                Icon(Icons.Default.Check, null, tint = AccentGreen, modifier = Modifier.size(16.dp))
-            } else {
+            IconButton(
+                onClick = onDelete,
+                modifier = Modifier.size(32.dp)
+            ) {
                 Icon(
-                    imageVector = if (isOnline) Icons.Default.CheckCircle else Icons.Default.Warning,
-                    contentDescription = null,
-                    tint = statusColor.copy(alpha = 0.6f),
-                    modifier = Modifier.size(16.dp)
+                    imageVector = Icons.Default.Delete,
+                    contentDescription = "Usuń",
+                    tint = AccentRed.copy(alpha = 0.8f),
+                    modifier = Modifier.size(20.dp)
                 )
             }
         }
@@ -588,8 +618,7 @@ fun FacesScreen() {
                     mapOf(
                         "name"      to personName.trim(),
                         "image_b64" to base64,
-                        "timestamp" to System.currentTimeMillis() / 1000L,
-                        "status"    to "pending"  // malina zmienia na "processed"
+                        "timestamp" to System.currentTimeMillis() / 1000L
                     )
                 ).addOnSuccessListener {
                     uploadState = UploadState.Success
@@ -630,8 +659,7 @@ fun FacesScreen() {
             Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 Text("Struktura dokumentu w Firestore:", fontSize = 10.sp, color = TextSecondary, fontFamily = FontFamily.Monospace)
                 Text("faces/{id}", fontSize = 11.sp, color = AccentGreen, fontFamily = FontFamily.Monospace)
-                Text("  name, image_b64, timestamp, status", fontSize = 11.sp, color = TextPrimary, fontFamily = FontFamily.Monospace)
-                Text("Malina nasłuchuje status == \"pending\"", fontSize = 10.sp, color = TextSecondary, fontFamily = FontFamily.Monospace)
+                Text("  name, image_b64, timestamp", fontSize = 11.sp, color = TextPrimary, fontFamily = FontFamily.Monospace)
             }
         }
     }
