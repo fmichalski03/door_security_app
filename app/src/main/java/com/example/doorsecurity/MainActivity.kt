@@ -4,10 +4,11 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Matrix
-import android.media.ExifInterface
+import androidx.exifinterface.media.ExifInterface
 import android.net.Uri
 import android.os.Bundle
 import android.util.Base64
+import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -19,6 +20,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -40,7 +42,6 @@ import java.io.ByteArrayOutputStream
 import java.text.SimpleDateFormat
 import java.util.*
 
-// ── Kolory ────────────────────────────────────────────────────────────────
 private val BgDark        = Color(0xFF0A0D12)
 private val BgCard        = Color(0xFF111820)
 private val BgCardAlt     = Color(0xFF161D27)
@@ -100,17 +101,14 @@ fun rememberFirestoreLogs(): List<LogEntry> {
 
 fun uriToBase64(context: Context, uri: Uri): String? {
     return try {
-        // 1. Sprawdź rotację (EXIF)
         val orientation = context.contentResolver.openInputStream(uri)?.use { input ->
             ExifInterface(input).getAttributeInt(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL)
         } ?: ExifInterface.ORIENTATION_NORMAL
 
-        // 2. Dekoduj bitmapę
         val stream = context.contentResolver.openInputStream(uri) ?: return null
         var bitmap = BitmapFactory.decodeStream(stream)
         stream.close()
 
-        // 3. Obróć jeśli trzeba
         if (orientation != ExifInterface.ORIENTATION_NORMAL) {
             val matrix = Matrix()
             when (orientation) {
@@ -121,17 +119,16 @@ fun uriToBase64(context: Context, uri: Uri): String? {
             bitmap = Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
         }
 
-        // 4. Skaluj
         val scaled = if (bitmap.width > 800) {
             val ratio = 800f / bitmap.width
             Bitmap.createScaledBitmap(bitmap, 800, (bitmap.height * ratio).toInt(), true)
         } else bitmap
 
-        // 5. Kompresuj
         val out = ByteArrayOutputStream()
         scaled.compress(Bitmap.CompressFormat.JPEG, 80, out)
         Base64.encodeToString(out.toByteArray(), Base64.NO_WRAP)
     } catch (e: Exception) {
+        Log.d("Error", e.toString())
         null
     }
 }
@@ -188,7 +185,6 @@ fun TopBar(screen: Screen, logs: List<LogEntry>) {
         Screen.FACES     -> "Baza twarzy"
     }
     val dotColor = if (logs.any { it.level == LogLevel.ERROR }) AccentRed else AccentGreen
-    val isConnected = logs.isNotEmpty()
 
     TopAppBar(
         title = {
@@ -214,7 +210,7 @@ fun BottomNavBar(current: Screen, onSelect: (Screen) -> Unit) {
         NavigationBarItem(selected = current == Screen.CAMERA, onClick = { onSelect(Screen.CAMERA) },
             icon = { Icon(Icons.Default.Star, null) }, label = { Text("Kamera", fontFamily = FontFamily.Monospace, fontSize = 11.sp) }, colors = colors)
         NavigationBarItem(selected = current == Screen.LOGS, onClick = { onSelect(Screen.LOGS) },
-            icon = { Icon(Icons.Default.List, null) }, label = { Text("Logi", fontFamily = FontFamily.Monospace, fontSize = 11.sp) }, colors = colors)
+            icon = { Icon(Icons.AutoMirrored.Filled.List, null) }, label = { Text("Logi", fontFamily = FontFamily.Monospace, fontSize = 11.sp) }, colors = colors)
         NavigationBarItem(selected = current == Screen.FACES, onClick = { onSelect(Screen.FACES) },
             icon = { Icon(Icons.Default.Face, null) }, label = { Text("Twarze", fontFamily = FontFamily.Monospace, fontSize = 11.sp) }, colors = colors)
     }
@@ -264,7 +260,6 @@ fun StatCard(label: String, value: String, valueColor: Color, modifier: Modifier
     }
 }
 
-// ── Camera ────────────────────────────────────────────────────────────────
 data class LatestImage(
     val bitmap: Bitmap,
     val status: String?,
@@ -277,14 +272,16 @@ data class DeviceInfo(
 )
 
 @Composable
-fun rememberFirestoreDevices(): List<DeviceInfo> {
+fun rememberFirestoreDevices(): Pair<List<DeviceInfo>, Boolean> {
     var devices by remember { mutableStateOf<List<DeviceInfo>>(emptyList()) }
+    var isLoading by remember { mutableStateOf(true) }
 
     DisposableEffect(Unit) {
         val listener = FirebaseFirestore.getInstance()
             .collection("devices_info")
             .orderBy("name", Query.Direction.ASCENDING)
             .addSnapshotListener { snapshot, error ->
+                isLoading = false
                 if (error != null || snapshot == null) return@addSnapshotListener
                 devices = snapshot.documents.mapNotNull { doc ->
                     val name = doc.getString("name") ?: return@mapNotNull null
@@ -294,7 +291,7 @@ fun rememberFirestoreDevices(): List<DeviceInfo> {
         onDispose { listener.remove() }
     }
 
-    return devices
+    return Pair(devices, isLoading)
 }
 
 @Composable
@@ -334,12 +331,11 @@ fun rememberDeviceImage(deviceId: String?): LatestImage? {
 
 @Composable
 fun CameraScreen() {
-    val devices = rememberFirestoreDevices()
+    val (devices, isLoading) = rememberFirestoreDevices()
     var selectedDevice by remember { mutableStateOf<DeviceInfo?>(null) }
     var showPreview by remember { mutableStateOf(false) }
     val latest = rememberDeviceImage(if (showPreview) selectedDevice?.id else null)
 
-    // Stan dla edycji nazwy
     var deviceToEdit by remember { mutableStateOf<DeviceInfo?>(null) }
     var newDeviceName by remember { mutableStateOf("") }
 
@@ -352,7 +348,9 @@ fun CameraScreen() {
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
         SectionTitle("Wybierz urządzenie")
-        if (devices.isEmpty()) {
+        if (isLoading) {
+            // Nic nie wyświetlamy podczas pierwszego ładowania
+        } else if (devices.isEmpty()) {
             Card(
                 shape = RoundedCornerShape(10.dp),
                 colors = CardDefaults.cardColors(containerColor = BgCard),
@@ -393,7 +391,6 @@ fun CameraScreen() {
             }
         }
 
-        // Dialog zmiany nazwy
         if (deviceToEdit != null) {
             AlertDialog(
                 onDismissRequest = { deviceToEdit = null },
@@ -631,7 +628,6 @@ fun FacesScreen() {
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
         if (uri != null) {
             selectedUri = uri
-            // Dekoduj podgląd
             val stream = context.contentResolver.openInputStream(uri)
             selectedBitmap = BitmapFactory.decodeStream(stream)
             stream?.close()
@@ -730,7 +726,7 @@ fun FacesScreen() {
         // Status
         when (val state = uploadState) {
             is UploadState.Success -> StatusBanner(
-                "Wysłano — malina przetworzy zdjęcie",
+                "Wysłano",
                 AccentGreen
             )
 
