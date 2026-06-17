@@ -158,6 +158,7 @@ enum class Screen { DASHBOARD, CAMERA, LOGS, FACES }
 fun DoorSecurityApp() {
     var currentScreen by remember { mutableStateOf(Screen.DASHBOARD) }
     val logs = rememberFirestoreLogs()
+    val (devices, _) = rememberFirestoreDevices()
 
     Scaffold(
         containerColor = BgDark,
@@ -166,9 +167,9 @@ fun DoorSecurityApp() {
     ) { padding ->
         Box(Modifier.padding(padding)) {
             when (currentScreen) {
-                Screen.DASHBOARD -> DashboardScreen(logs)
+                Screen.DASHBOARD -> DashboardScreen(logs, devices)
                 Screen.CAMERA    -> CameraScreen()
-                Screen.LOGS      -> LogsScreen(logs)
+                Screen.LOGS      -> LogsScreen(logs, devices)
                 Screen.FACES     -> FacesScreen()
             }
         }
@@ -217,7 +218,7 @@ fun BottomNavBar(current: Screen, onSelect: (Screen) -> Unit) {
 }
 
 @Composable
-fun DashboardScreen(logs: List<LogEntry>) {
+fun DashboardScreen(logs: List<LogEntry>, devices: List<DeviceInfo>) {
     val errorCount = logs.count { it.level == LogLevel.ERROR }
     val warnCount  = logs.count { it.level == LogLevel.WARN }
 
@@ -245,7 +246,7 @@ fun DashboardScreen(logs: List<LogEntry>) {
                 }
             }
         }
-        else { items(logs.take(5)) { LogRow(it) } }
+        else { items(logs.take(5)) { LogRow(it, devices) } }
     }
 }
 
@@ -582,7 +583,7 @@ fun DeviceRow(
 
 
 @Composable
-fun LogsScreen(logs: List<LogEntry>) {
+fun LogsScreen(logs: List<LogEntry>, devices: List<DeviceInfo>) {
     var filter by remember { mutableStateOf<LogLevel?>(null) }
     val filtered = if (filter == null) logs else logs.filter { it.level == filter }
 
@@ -611,7 +612,7 @@ fun LogsScreen(logs: List<LogEntry>) {
                 Text("Brak logów dla wybranego filtra", fontSize = 13.sp, color = TextSecondary, fontFamily = FontFamily.Monospace)
             }
             else -> LazyColumn(contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                items(filtered, key = { it.id }) { LogRow(it) }
+                items(filtered, key = { it.id }) { LogRow(it, devices) }
             }
         }
     }
@@ -774,12 +775,23 @@ fun FilterChip(label: String, selected: Boolean, activeColor: Color, onClick: ()
 }
 
 @Composable
-fun LogRow(entry: LogEntry) {
+fun LogRow(entry: LogEntry, devices: List<DeviceInfo>) {
     val (levelColor, levelBg) = when (entry.level) {
         LogLevel.INFO  -> AccentGreen to AccentGreen.copy(alpha = 0.08f)
         LogLevel.WARN  -> AccentAmber to AccentAmber.copy(alpha = 0.08f)
         LogLevel.ERROR -> AccentRed   to AccentRed.copy(alpha = 0.10f)
     }
+
+    // Wyciąganie ID z nawiasów i podmana na nazwę urządzenia
+    val resolvedMessage = remember(entry.message, devices) {
+        val regex = Regex("\\(([^)]+)\\)")
+        regex.replace(entry.message) { result ->
+            val id = result.groupValues[1]
+            val device = devices.find { it.id == id }
+            if (device != null) "(${device.name})" else result.value
+        }
+    }
+
     Card(shape = RoundedCornerShape(8.dp), colors = CardDefaults.cardColors(containerColor = BgCard),
         border = BorderStroke(0.5.dp, Border), modifier = Modifier.fillMaxWidth()) {
         Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -787,7 +799,7 @@ fun LogRow(entry: LogEntry) {
                 Text(entry.level.name, fontSize = 10.sp, color = levelColor, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold)
             }
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                Text(entry.message, fontSize = 13.sp, color = TextPrimary, fontFamily = FontFamily.Monospace, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                Text(resolvedMessage, fontSize = 13.sp, color = TextPrimary, fontFamily = FontFamily.Monospace, maxLines = 2, overflow = TextOverflow.Ellipsis)
                 Text(entry.formattedTime, fontSize = 10.sp, color = TextSecondary, fontFamily = FontFamily.Monospace)
             }
         }
