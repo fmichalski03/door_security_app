@@ -197,14 +197,6 @@ fun TopBar(screen: Screen, logs: List<LogEntry>) {
                 Text(title, fontSize = 18.sp, fontWeight = FontWeight.SemiBold, fontFamily = FontFamily.Monospace, color = TextPrimary)
             }
         },
-        actions = {
-            val label = if (isConnected) "LIVE" else "ŁĄCZENIE…"
-            val color = if (isConnected) AccentGreen else AccentAmber
-            Text(label, color = color, fontSize = 11.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace,
-                modifier = Modifier.padding(end = 16.dp)
-                    .background(color.copy(alpha = 0.12f), RoundedCornerShape(4.dp))
-                    .padding(horizontal = 8.dp, vertical = 4.dp))
-        },
         colors = TopAppBarDefaults.topAppBarColors(containerColor = BgCard, titleContentColor = TextPrimary)
     )
 }
@@ -243,7 +235,20 @@ fun DashboardScreen(logs: List<LogEntry>) {
             }
         }
         item { SectionTitle("Ostatnie zdarzenia") }
-        if (logs.isEmpty()) { item { LoadingCard() } }
+        if (logs.isEmpty()) {
+            item {
+                Card(
+                    shape = RoundedCornerShape(10.dp),
+                    colors = CardDefaults.cardColors(containerColor = BgCard),
+                    border = BorderStroke(0.5.dp, Border),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Box(Modifier.fillMaxWidth().padding(32.dp), contentAlignment = Alignment.Center) {
+                        Text("Brak logów", fontSize = 13.sp, color = TextSecondary, fontFamily = FontFamily.Monospace)
+                    }
+                }
+            }
+        }
         else { items(logs.take(5)) { LogRow(it) } }
     }
 }
@@ -255,19 +260,6 @@ fun StatCard(label: String, value: String, valueColor: Color, modifier: Modifier
         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Text(label, fontSize = 10.sp, color = TextSecondary, fontFamily = FontFamily.Monospace)
             Text(value, fontSize = 18.sp, fontWeight = FontWeight.Bold, color = valueColor, fontFamily = FontFamily.Monospace)
-        }
-    }
-}
-
-@Composable
-fun LoadingCard() {
-    Card(shape = RoundedCornerShape(10.dp), colors = CardDefaults.cardColors(containerColor = BgCard),
-        border = BorderStroke(0.5.dp, Border), modifier = Modifier.fillMaxWidth()) {
-        Box(Modifier.fillMaxWidth().padding(32.dp), contentAlignment = Alignment.Center) {
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                CircularProgressIndicator(color = AccentGreen, modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
-                Text("Szukanie urządzeń…", fontSize = 13.sp, color = TextSecondary, fontFamily = FontFamily.Monospace)
-            }
         }
     }
 }
@@ -347,6 +339,10 @@ fun CameraScreen() {
     var showPreview by remember { mutableStateOf(false) }
     val latest = rememberDeviceImage(if (showPreview) selectedDevice?.id else null)
 
+    // Stan dla edycji nazwy
+    var deviceToEdit by remember { mutableStateOf<DeviceInfo?>(null) }
+    var newDeviceName by remember { mutableStateOf("") }
+
     Column(
         Modifier
             .fillMaxSize()
@@ -357,7 +353,16 @@ fun CameraScreen() {
     ) {
         SectionTitle("Wybierz urządzenie")
         if (devices.isEmpty()) {
-            LoadingCard()
+            Card(
+                shape = RoundedCornerShape(10.dp),
+                colors = CardDefaults.cardColors(containerColor = BgCard),
+                border = BorderStroke(0.5.dp, Border),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Box(Modifier.fillMaxWidth().padding(32.dp), contentAlignment = Alignment.Center) {
+                    Text("Brak urządzeń", fontSize = 13.sp, color = TextSecondary, fontFamily = FontFamily.Monospace)
+                }
+            }
         } else {
             devices.forEach { device ->
                 DeviceRow(
@@ -379,9 +384,62 @@ fun CameraScreen() {
                                     showPreview = false
                                 }
                             }
+                    },
+                    onEdit = {
+                        deviceToEdit = device
+                        newDeviceName = device.name
                     }
                 )
             }
+        }
+
+        // Dialog zmiany nazwy
+        if (deviceToEdit != null) {
+            AlertDialog(
+                onDismissRequest = { deviceToEdit = null },
+                containerColor = BgCard,
+                title = { Text("Zmień nazwę urządzenia", color = TextPrimary, fontSize = 16.sp, fontFamily = FontFamily.Monospace) },
+                text = {
+                    OutlinedTextField(
+                        value = newDeviceName,
+                        onValueChange = { newDeviceName = it },
+                        label = { Text("Nowa nazwa", fontSize = 12.sp) },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = AccentGreen,
+                            unfocusedBorderColor = Border,
+                            focusedTextColor = TextPrimary,
+                            unfocusedTextColor = TextPrimary,
+                            cursorColor = AccentGreen
+                        )
+                    )
+                },
+                confirmButton = {
+                    TextButton(
+                        onClick = {
+                            val id = deviceToEdit!!.id
+                            val name = newDeviceName.trim()
+                            if (name.isNotBlank()) {
+                                FirebaseFirestore.getInstance()
+                                    .collection("devices_info")
+                                    .document(id)
+                                    .update("name", name)
+                                    .addOnSuccessListener {
+                                        deviceToEdit = null
+                                    }
+                            }
+                        }
+                    ) {
+                        Text("ZAPISZ", color = AccentGreen, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { deviceToEdit = null }) {
+                        Text("ANULUJ", color = TextSecondary, fontFamily = FontFamily.Monospace)
+                    }
+                }
+            )
         }
 
         if (selectedDevice != null) {
@@ -467,7 +525,8 @@ fun DeviceRow(
     device: DeviceInfo, 
     isSelected: Boolean = false, 
     onClick: () -> Unit = {},
-    onDelete: () -> Unit = {}
+    onDelete: () -> Unit = {},
+    onEdit: () -> Unit = {}
 ) {
     val borderColor = if (isSelected) AccentGreen.copy(alpha = 0.5f) else Border
     val containerColor = if (isSelected) BgCardAlt else BgCard
@@ -496,6 +555,17 @@ fun DeviceRow(
                     color = TextPrimary,
                     fontFamily = FontFamily.Monospace,
                     fontWeight = FontWeight.SemiBold
+                )
+            }
+            IconButton(
+                onClick = onEdit,
+                modifier = Modifier.size(32.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Edit,
+                    contentDescription = "Edytuj",
+                    tint = AccentAmber.copy(alpha = 0.8f),
+                    modifier = Modifier.size(20.dp)
                 )
             }
             IconButton(
@@ -528,7 +598,18 @@ fun LogsScreen(logs: List<LogEntry>) {
         }
         HorizontalDivider(color = Border, thickness = 0.5.dp)
         when {
-            logs.isEmpty()     -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { LoadingCard() }
+            logs.isEmpty() -> Box(Modifier.fillMaxSize().padding(16.dp), contentAlignment = Alignment.Center) {
+                Card(
+                    shape = RoundedCornerShape(10.dp),
+                    colors = CardDefaults.cardColors(containerColor = BgCard),
+                    border = BorderStroke(0.5.dp, Border),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Box(Modifier.fillMaxWidth().padding(32.dp), contentAlignment = Alignment.Center) {
+                        Text("Brak logów", fontSize = 13.sp, color = TextSecondary, fontFamily = FontFamily.Monospace)
+                    }
+                }
+            }
             filtered.isEmpty() -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 Text("Brak logów dla wybranego filtra", fontSize = 13.sp, color = TextSecondary, fontFamily = FontFamily.Monospace)
             }
@@ -648,19 +729,13 @@ fun FacesScreen() {
 
         // Status
         when (val state = uploadState) {
-            is UploadState.Success -> StatusBanner("Wysłano — malina przetworzy zdjęcie", AccentGreen)
-            is UploadState.Error   -> StatusBanner("Błąd: ${state.message}", AccentRed)
-            else -> {}
-        }
+            is UploadState.Success -> StatusBanner(
+                "Wysłano — malina przetworzy zdjęcie",
+                AccentGreen
+            )
 
-        // Info dla maliny
-        Card(shape = RoundedCornerShape(8.dp), colors = CardDefaults.cardColors(containerColor = BgCardAlt),
-            border = BorderStroke(0.5.dp, Border), modifier = Modifier.fillMaxWidth()) {
-            Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                Text("Struktura dokumentu w Firestore:", fontSize = 10.sp, color = TextSecondary, fontFamily = FontFamily.Monospace)
-                Text("faces/{id}", fontSize = 11.sp, color = AccentGreen, fontFamily = FontFamily.Monospace)
-                Text("  name, image_b64, timestamp", fontSize = 11.sp, color = TextPrimary, fontFamily = FontFamily.Monospace)
-            }
+            is UploadState.Error -> StatusBanner("Błąd: ${state.message}", AccentRed)
+            else -> {}
         }
     }
 }
