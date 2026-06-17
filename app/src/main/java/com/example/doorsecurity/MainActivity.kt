@@ -730,7 +730,7 @@ fun FacesScreen() {
         // Status
         when (val state = uploadState) {
             is UploadState.Success -> StatusBanner(
-                "Wysłano — malina przetworzy zdjęcie",
+                "Wysłano",
                 AccentGreen
             )
 
